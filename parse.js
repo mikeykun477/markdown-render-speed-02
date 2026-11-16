@@ -438,17 +438,40 @@ function quoteAt(line, col0) {
   if (i >= line.length || line.charCodeAt(i) !== 62) return null;
   i++;
   col++;
-  if (i < line.length) {
-    const c = line.charCodeAt(i);
-    if (c === 32) {
-      i++;
-      col++;
-    } else if (c === 9) {
-      const w = 4 - (col % 4);
-      return { rest: ' '.repeat(w - 1) + line.slice(i + 1), cols: col + 1 - col0 };
-    }
+  // The whitespace after `>` expands relative to the marker (marked's
+  // blockquote expands it starting at the marker's own length: leading
+  // spaces plus `>`), then one space is consumed as the marker's
+  // separator. Expanding it here — instead of leaving a tab for a
+  // later absolute-column expansion — keeps nested quotes (inside a
+  // list item, where the absolute column and the marker column differ)
+  // exact. The returned column keeps the following text at its
+  // absolute column.
+  const markerLen = sc.col - col0 + 1;
+  let j = i;
+  let rel = markerLen;
+  let expanded = '';
+  let abs = col;
+  while (j < line.length) {
+    const ch = line.charCodeAt(j);
+    if (ch === 32) {
+      expanded += ' ';
+      rel++;
+      abs++;
+      j++;
+    } else if (ch === 9) {
+      const w = 4 - (rel % 4);
+      expanded += ' '.repeat(w);
+      rel += w;
+      abs += 4 - (abs % 4);
+      j++;
+    } else break;
   }
-  return { rest: line.slice(i), cols: col - col0 };
+  if (expanded.length === 0) {
+    return { rest: line.slice(i), cols: col - col0 };
+  }
+  const restSpaces = expanded.length - 1;
+  const colNew = abs - restSpaces;
+  return { rest: ' '.repeat(restSpaces) + line.slice(j), cols: colNew - col0 };
 }
 
 // Is `rest` a setext underline (0-3 spaces, then =+ or -+, then spaces)?
@@ -2446,6 +2469,26 @@ function scanInline(s, refs, flags) {
 // HTML tags are hidden behind 'a's, and backslash escapes behind '+'s, so
 // emphasis scanning never counts delimiters inside them. Indices line up
 // with s exactly.
+// True when every backtick run in `text` closes with a run of the same
+// length (a code span, possibly holding shorter backtick runs). Marked's
+// emphasis mask only recognises a link whose label is made of such spans
+// and plain characters; a label with a mismatched run (e.g. `` `` ``
+// opened, only ` to close) is not matched as a link by the mask at all,
+// so its backticks stay visible and a later lone run can open a code
+// span that swallows the emphasis delimiters after the link.
+function labelTicksBalanced(text) {
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '`') {
+      const run = tickRun(text, i);
+      const close = tickClose(text, i, run);
+      if (close === -1) return false;
+      i = close;
+    } else i++;
+  }
+  return true;
+}
+
 function maskInline(s, refs) {
   const chars = s.split('');
   let i = 0;
@@ -2474,7 +2517,7 @@ function maskInline(s, refs) {
       let done = false;
       if (close !== -1) {
         const tail = linkTail(s, close, s.slice(start + 1, close), refs);
-        if (tail) {
+        if (tail && labelTicksBalanced(s.slice(start + 1, close))) {
           // A link whose text holds another link is not a link at all;
           // do not hide it (its delimiters stay visible to emphasis).
           const kids = scanInline(s.slice(start + 1, close), refs, NO_GFM);
