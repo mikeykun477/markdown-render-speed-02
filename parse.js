@@ -2499,8 +2499,19 @@ function maskInline(s, refs) {
   const chars = s.split('');
   let i = 0;
   const n = s.length;
+  // Hide a span (code, link, tag) the way marked's emphasis mask
+  // does: `[` + a's + `]` — the brackets are punctuation, so a `_`
+  // run next to the span is not intra-word and may open or close.
+  // Hiding with plain `a`'s instead would make `` `a`__init__`b` ``
+  // unreadable as a strong (the closer looks followed by a letter).
   const hide = (a, b) => {
-    for (let k = a; k < b; k++) chars[k] = 'a';
+    if (b - a >= 2) {
+      chars[a] = '[';
+      chars[b - 1] = ']';
+      for (let k = a + 1; k < b - 1; k++) chars[k] = 'a';
+    } else {
+      for (let k = a; k < b; k++) chars[k] = 'a';
+    }
   };
   while (i < n) {
     const c = s[i];
