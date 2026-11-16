@@ -1326,10 +1326,13 @@ function buildBlocks(lines, refs) {
         noteContent();
         return;
       }
-      // Fenced code.
+      // Fenced code. Marked strips the opening fence's indent from
+      // content lines only for backtick fences (its compensation
+      // regex matches whitespace before ```); a tilde fence keeps
+      // the content's full indent.
       const f = fenceAt(cur, ccol);
       if (f !== null) {
-        const node = { t: 'code', fenced: true, ch: f.ch, len: f.len, lang: f.info, ind: indentCols(cur, ccol), lines: [] };
+        const node = { t: 'code', fenced: true, ch: f.ch, len: f.len, lang: f.info, ind: f.ch === '~' ? 0 : indentCols(cur, ccol), lines: [] };
         tip().kids.push(node);
         stack.push(node);
         noteContent();
@@ -1407,8 +1410,11 @@ function lazyLine(s, col, n, relCol) {
     // with exactly 4 spaces, so it cannot read as a setext underline.
     return '    ' + rest;
   }
-  if (n === 1 && ind >= 4) {
-    // A first lazy line indented 4+ columns loses the code indent.
+  if (ind >= 4) {
+    // A lazy line indented 4+ columns loses the code indent (marked
+    // reads such a line as indented code and merges the stripped text
+    // into the paragraph); this holds for every continuation line,
+    // not just the first.
     const c = cutCols(s, 4, col);
     return c === null ? s : c;
   }
