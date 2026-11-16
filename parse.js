@@ -1757,13 +1757,17 @@ function bracketClose(s, i) {
       // content). If no same-length run exists, fall back to the next
       // run of any length so a `]` past it can still close the bracket.
       // An unmatched run (no backtick at all after it) swallows the rest.
+      // Exception: when the FIRST run sits immediately before `]`, it
+      // closes the span there (a mismatched code span at the end of the
+      // label) — preferring a same-length run would jump past the `]`
+      // into the rest of the paragraph (doc-09/doc-35).
       let k = j + n;
-      let first = -1;
+      let firstEnd = -1;
       let closed = -1;
       while (k < s.length) {
         if (s[k] === '`') {
           const m = tickRun(s, k);
-          if (first === -1) first = k;
+          if (firstEnd === -1) firstEnd = k + m;
           if (m === n) {
             closed = k + m;
             break;
@@ -1773,10 +1777,12 @@ function bracketClose(s, i) {
           k++;
         }
       }
-      if (closed !== -1) {
+      if (firstEnd !== -1 && s[firstEnd] === ']') {
+        j = firstEnd;
+      } else if (closed !== -1) {
         j = closed;
-      } else if (first !== -1) {
-        j = first + tickRun(s, first);
+      } else if (firstEnd !== -1) {
+        j = firstEnd;
       } else {
         return -1;
       }
@@ -2285,7 +2291,13 @@ function tokensText(tokens) {
 // spans, links and HTML so emphasis scanning never sees their delimiters.
 function scanInline(s, refs, flags) {
   const out = [];
-  const masked = maskInline(s, refs);
+  let masked = null;
+  const getMasked = () => (masked ??= maskInline(s, refs));
+  // A scheme autolink needs a `:` and an email needs an `@` ahead;
+  // one native scan each beats a per-character indexOf/scheme probe
+  // on paragraphs that contain neither.
+  const hasColon = s.includes(':');
+  const hasAt = s.includes('@');
   let buf = '';
   let i = 0;
   const n = s.length;
@@ -2390,12 +2402,16 @@ function scanInline(s, refs, flags) {
     } else if (c === '*' || c === '_') {
       let run = 1;
       while (i + run < n && s[i + run] === c) run++;
-      const got = tryEmphasis(s, masked, i, c, run, refs, flags);
+      // Only build the mask when the run can open at all (tryEmphasis
+      // returns null immediately otherwise); intra-word `_` runs are
+      // common in doc text and never need it.
+      const canOpen = delimCan(s, i, run, c).canOpen;
+      const got = canOpen ? tryEmphasis(s, getMasked(), i, c, run, refs, flags) : null;
       if (got) {
         flush();
         out.push(got.node);
         i = got.end;
-      } else if (delimCan(s, i, run, c).canOpen) {
+      } else if (canOpen) {
         // Only one delimiter is literal; the rest of the run is
         // retried as an opener (e.g. `**foo*` -> `*` + `<em>foo</em>`).
         buf += c;
@@ -2409,7 +2425,7 @@ function scanInline(s, refs, flags) {
     } else if (c === '~') {
       let run = 1;
       while (i + run < n && s[i + run] === '~') run++;
-      const got = run <= 2 ? tryDel(s, masked, i, run, refs, flags) : null;
+      const got = run <= 2 && delimCan(s, i, run, '~').canOpen ? tryDel(s, getMasked(), i, run, refs, flags) : null;
       if (got) {
         flush();
         out.push(got.node);
@@ -2438,7 +2454,7 @@ function scanInline(s, refs, flags) {
         buf += 'h';
         i++;
       }
-    } else if (!(flags & NO_GFM) && !inLinkLeak && alphaCode(s.charCodeAt(i)) && schemeLen(s, i) > 0) {
+    } else if (!(flags & NO_GFM) && !inLinkLeak && hasColon && alphaCode(s.charCodeAt(i)) && schemeLen(s, i) > 0) {
       const got = gfmLinkAt(s, i);
       if (got) {
         flush();
@@ -2448,7 +2464,7 @@ function scanInline(s, refs, flags) {
         buf += c;
         i++;
       }
-    } else if (!(flags & NO_GFM) && !inLinkLeak && isEmailStart(s, i)) {
+    } else if (!(flags & NO_GFM) && !inLinkLeak && hasAt && isEmailStart(s, i)) {
       const got = gfmLinkAt(s, i);
       if (got) {
         flush();
@@ -2574,11 +2590,47 @@ function maskInline(s, refs) {
 function tryEmphasis(s, masked, i, ch, run, refs, flags) {
   const open = delimCan(s, i, run, ch);
   if (!open.canOpen) return null;
+  // The other delimiter char: an emphasis span of it that is nested
+  // inside this one must not leak its inner runs into this balance
+  // (cm-470: the `*` inside `__bar *baz bim__` is trapped). A span
+  // that CROSSES this one (its closer past the next `ch` closer)
+  // must not be skipped (cm-469: `*foo _bar* baz_`).
+  const otherCh = ch === '*' ? '_' : '*';
   let m = run;
   let f = 0;
   let j = i + run;
   const n = masked.length;
   while (j < n) {
+    if (masked[j] === otherCh) {
+      let b = 1;
+      while (j + b < n && masked[j + b] === otherCh) b++;
+      if (delimCan(masked, j, b, otherCh).canOpen) {
+        const other = tryEmphasis(s, masked, j, otherCh, b, refs, flags);
+        if (other) {
+          let nextCloser = -1;
+          let k = j + b;
+          while (k < n) {
+            if (masked[k] === ch) {
+              let c2 = 1;
+              while (k + c2 < n && masked[k + c2] === ch) c2++;
+              if (delimCan(masked, k, c2, ch).canClose) {
+                nextCloser = k;
+                break;
+              }
+              k += c2;
+            } else {
+              k++;
+            }
+          }
+          if (nextCloser === -1 || other.end <= nextCloser) {
+            j = other.end;
+            continue;
+          }
+        }
+      }
+      j += b;
+      continue;
+    }
     if (masked[j] !== ch) {
       j++;
       continue;
@@ -2854,10 +2906,15 @@ function blocksHtml(kids, refs, out) {
 let inLinkLeak = false;
 
 // Update the leaked `inLink` state for an inline HTML tag string.
+// Marked's conditions are narrow (probed 2026-11-16): an opening tag
+// sets the leak only when a literal space follows `a` (`<a href=...>`,
+// `<a />`), NOT for bare `<a>`, self-closing `<a/>`, or a tab/newline
+// after `a`. A closing tag clears it only when it is exactly `</a>`,
+// NOT `</a >` or `</a\t>`.
 function noteHtmlTag(tag) {
   if (tag[1] === '/') {
-    if (/^<\/a[\s>]/i.test(tag)) inLinkLeak = false;
-  } else if (/^<a[\s/>]/i.test(tag)) {
+    if (/^<\/a>/i.test(tag)) inLinkLeak = false;
+  } else if (/^<a /i.test(tag)) {
     inLinkLeak = true;
   }
 }
