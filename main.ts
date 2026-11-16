@@ -1,8 +1,8 @@
-// The harness runs `node /bot/main.ts` (node22). It reads every case from
-// /input/cases.json (a JSON array of {id, markdown}), renders each one alone
-// with parse() from parse.js, and writes /output/html.json: a JSON array of
-// the HTML strings, one per case and in the cases' order. Outside a container
-// MAKEFUN_INPUT_DIR and MAKEFUN_OUTPUT_DIR stand in for /input and /output.
+// Driver for the markdown renderer: reads every case from
+// $MAKEFUN_INPUT_DIR/cases.json (default /input), renders each one alone
+// with parse() from parse.js, and writes $MAKEFUN_OUTPUT_DIR/html.json
+// (default /output) as a JSON array of the HTML strings, one per case and
+// in the cases' order.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
